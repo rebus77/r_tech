@@ -1,73 +1,105 @@
-name: Update Tech RSS
+name: Generate Reuters Technology RSS
 
 on:
+  workflow_dispatch: {}
   schedule:
-    - cron: '0 * * * *'  # runs every hour
-  workflow_dispatch:
+    - cron: '*/20 * * * *'  # every 20 minutes
 
 jobs:
-  build-rss:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout repo
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      # 2. Set up Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: '3.x'
 
-      # 3. Install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests feedgen
+          pip install requests feedgen python-dateutil lxml
 
-      # 4. Generate RSS feed using NewsAPI
       - name: Generate RSS feed
-        env:
-          NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}  # store your NewsAPI key in GitHub secrets
         run: |
           python << 'EOF'
-          import os
-          import requests
+          import requests, json
           from feedgen.feed import FeedGenerator
-          from datetime import datetime
+          from dateutil.parser import parse
+          import datetime
+          import os
+          import xml.etree.ElementTree as ET
 
-          NEWSAPI_KEY = os.environ['NEWSAPI_KEY']
-          URL = 'https://newsapi.org/v2/top-headlines'
-          params = {
-              'sources': 'reuters',
-              'category': 'technology',
-              'pageSize': 15,
-              'apiKey': NEWSAPI_KEY
-          }
-
-          response = requests.get(URL, params=params)
-          response.raise_for_status()
-          data = response.json()
-          articles = data.get('articles', [])
+          feed_file = 'feed.xml'
+          max_items = 50
 
           fg = FeedGenerator()
-          fg.title('Reuters Technology News')
-          fg.link(href='https://www.reuters.com/technology/', rel='alternate')
-          fg.description('Latest technology news from Reuters')
-          fg.language('en')
+          fg.title('Reuters Technology RSS')
+          fg.link(href='https://rebus77.github.io/r_tech/')
+          fg.description('RSS feed for Reuters Technology news')
 
-          for article in articles:
+          # Load existing feed items
+          existing_items = []
+          if os.path.exists(feed_file):
+              tree = ET.parse(feed_file)
+              root = tree.getroot()
+              for item in root.findall('channel/item'):
+                  existing_items.append({
+                      'title': item.find('title').text,
+                      'link': item.find('link').text,
+                      'description': item.find('description').text if item.find('description') is not None else '',
+                      'pubDate': item.find('pubDate').text
+                  })
+
+          # Fetch JSON embedded in Reuters Technology page
+          url = 'https://www.reuters.com/technology/'
+          headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+          r = requests.get(url, headers=headers)
+          r.raise_for_status()
+          # Look for initial JSON embedded in <script type="application/ld+json">
+          json_articles = []
+          import re
+          matches = re.findall(r'<script type="application/ld\+json">(.+?)</script>', r.text, re.DOTALL)
+          for m in matches:
+              try:
+                  data = json.loads(m)
+                  if isinstance(data, dict) and data.get('@type') == 'ItemList':
+                      for item in data.get('itemListElement', []):
+                          article = item.get('item', {})
+                          json_articles.append({
+                              'title': article.get('headline', ''),
+                              'link': article.get('url', ''),
+                              'description': article.get('description', ''),
+                              'pubDate': parse(article.get('datePublished', datetime.datetime.utcnow().isoformat())).strftime("%a, %d %b %Y %H:%M:%S %z")
+                          })
+              except Exception:
+                  continue
+
+          new_articles = []
+          for a in json_articles[:15]:
+              if a['link'].startswith('/'):
+                  a['link'] = 'https://www.reuters.com' + a['link']
+              new_articles.append(a)
+
+          # Merge with existing, remove duplicates
+          combined = new_articles + [x for x in existing_items if x['link'] not in {a['link'] for a in new_articles}]
+          combined = combined[:max_items]  # keep latest 50
+
+          # Add items to feed
+          for article in combined:
               fe = fg.add_entry()
-              fe.title(article.get('title', 'No title'))
-              fe.link(href=article.get('url', ''))
-              fe.description(article.get('description', ''))
-              fe.pubDate(article.get('publishedAt', datetime.utcnow().isoformat()))
+              fe.id(article['link'])
+              fe.link(href=article['link'])
+              fe.title(article['title'])
+              fe.description(article['description'])
+              fe.pubDate(article['pubDate'])
 
-          fg.rss_file('rss.xml')
+          fg.rss_file(feed_file)
           EOF
 
-      # 5. Commit and push RSS feed
       - name: Commit and push RSS feed
         uses: ad-m/github-push-action@v0.6.0
         with:
