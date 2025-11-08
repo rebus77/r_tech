@@ -1,0 +1,73 @@
+name: Generate Reuters Technology RSS
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/20 * * * *'   # every 20 minutes
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 feedgen python-dateutil
+
+      - name: Generate RSS
+        run: |
+          python <<'PYCODE'
+          import requests
+          from bs4 import BeautifulSoup
+          from feedgen.feed import FeedGenerator
+          from dateutil.parser import parse
+          import datetime
+
+          URL = "https://www.reuters.com/technology/"
+          HEADERS = {"User-Agent": "Mozilla/5.0"}
+          html = requests.get(URL, headers=HEADERS).text
+          soup = BeautifulSoup(html, "html.parser")
+
+          fg = FeedGenerator()
+          fg.id(URL)
+          fg.title("Reuters Technology")
+          fg.link(href=URL, rel="alternate")
+          fg.description("Latest Technology news from Reuters")
+          fg.language("en")
+
+          for item in soup.select("article")[:15]:
+              a_tag = item.select_one("a[data-testid='Heading']")
+              if not a_tag:
+                  continue
+              link = "https://www.reuters.com" + a_tag.get('href', '')
+              title = a_tag.get_text(strip=True)
+
+              time_tag = item.select_one("time")
+              if time_tag and time_tag.get("datetime"):
+                  pub_dt = parse(time_tag["datetime"])
+              else:
+                  pub_dt = datetime.datetime.utcnow()
+
+              fe = fg.add_entry()
+              fe.id(link)
+              fe.link(href=link)
+              fe.title(title)
+              fe.pubDate(pub_dt)
+
+          fg.rss_file("feed.xml")
+          PYCODE
+
+      - name: Commit feed if changed
+        run: |
+          git config --global user.email "actions@github.com"
+          git config --global user.name "GitHub Actions"
+          git add feed.xml
+          git diff --cached --quiet || git commit -m "Update RSS feed"
+          git push
