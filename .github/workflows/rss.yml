@@ -2,130 +2,77 @@ name: Update Tech RSS Feed
 
 on:
   schedule:
-    # Run every 20 minutes
-    - cron: "*/20 * * * *"
+    # Every 20 minutes
+    - cron: '*/20 * * * *'
   workflow_dispatch:
 
 jobs:
   update-rss:
     runs-on: ubuntu-latest
-
     steps:
       # 1. Checkout repo
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
-      # 2. Setup Python
+      # 2. Set up Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.x"
+          python-version: "3.11"
 
       # 3. Install dependencies
-      - name: Install Python dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 lxml
+          pip install requests beautifulsoup4
 
-      # 4. Run scraper and generate feed
-      - name: Run Python scraper
+      # 4. Generate RSS feed
+      - name: Generate RSS feed
         run: |
           python << 'EOF'
           import requests
           from bs4 import BeautifulSoup
+          import datetime
           import xml.etree.ElementTree as ET
-          import os
-          import hashlib
-          from datetime import datetime
-          import email.utils
 
-          FEED_FILE = "feed.xml"
-          TMP_FEED_FILE = "feed_tmp.xml"
-          REUTERS_URL = "https://www.reuters.com/technology/"
+          FEED_FILE = "feed.xml"  # GitHub Pages root
+          RSS_TITLE = "Reuters Technology RSS"
+          RSS_LINK = "https://rebus77.github.io/r_tech/"
+          RSS_DESC = "RSS feed for Reuters Technology news"
 
-          def create_empty_feed(filename):
-              rss = ET.Element("rss", version="2.0")
-              channel = ET.SubElement(rss, "channel")
-              ET.SubElement(channel, "title").text = "Reuters Technology RSS"
-              ET.SubElement(channel, "link").text = "https://rebus77.github.io/r_tech/"
-              ET.SubElement(channel, "description").text = "RSS feed for Reuters Technology news"
-              tree = ET.ElementTree(rss)
-              tree.write(filename, encoding="utf-8", xml_declaration=True)
+          # Base RSS XML
+          rss = ET.Element("rss", version="2.0")
+          channel = ET.SubElement(rss, "channel")
+          ET.SubElement(channel, "title").text = RSS_TITLE
+          ET.SubElement(channel, "link").text = RSS_LINK
+          ET.SubElement(channel, "description").text = RSS_DESC
 
-          def file_hash(path):
-              if not os.path.exists(path):
-                  return None
-              with open(path, "rb") as f:
-                  return hashlib.md5(f.read()).hexdigest()
-
-          try:
-              headers = {
-                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-              }
-              r = requests.get(REUTERS_URL, headers=headers, timeout=10)
-              r.raise_for_status()
-              soup = BeautifulSoup(r.text, "lxml")
-
-              rss = ET.Element("rss", version="2.0")
-              channel = ET.SubElement(rss, "channel")
-              ET.SubElement(channel, "title").text = "Reuters Technology RSS"
-              ET.SubElement(channel, "link").text = "https://rebus77.github.io/r_tech/"
-              ET.SubElement(channel, "description").text = "RSS feed for Reuters Technology news"
-
-              articles = soup.select("article")[:15]  # Limit to 15 articles
+          # Scrape Reuters Technology
+          url = "https://www.reuters.com/technology/"
+          headers = {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+          }
+          r = requests.get(url, headers=headers)
+          if r.status_code != 200:
+              print(f"HTTP Error: {r.status_code}")
+          else:
+              soup = BeautifulSoup(r.text, "html.parser")
+              articles = soup.select("article h3 a")[:15]  # adjust selector as needed
               for a in articles:
-                  title_tag = a.find("h3")
-                  link_tag = a.find("a", href=True)
-                  desc_tag = a.find("p")  # Attempt to get a description/summary
-                  date_tag = a.find("time")
-                  img_tag = a.find("img")  # Get image if available
+                  item = ET.SubElement(channel, "item")
+                  ET.SubElement(item, "title").text = a.get_text(strip=True)
+                  ET.SubElement(item, "link").text = a['href'] if a['href'].startswith("http") else "https://www.reuters.com" + a['href']
+                  ET.SubElement(item, "pubDate").text = datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
 
-                  if title_tag and link_tag:
-                      item = ET.SubElement(channel, "item")
-                      ET.SubElement(item, "title").text = title_tag.get_text(strip=True)
-                      ET.SubElement(item, "link").text = "https://www.reuters.com" + link_tag['href']
-
-                      # Description snippet
-                      if desc_tag:
-                          ET.SubElement(item, "description").text = desc_tag.get_text(strip=True)
-                      else:
-                          ET.SubElement(item, "description").text = "Read full article on Reuters."
-
-                      # Add image if available
-                      if img_tag and img_tag.has_attr("src"):
-                          ET.SubElement(item, "enclosure", url=img_tag["src"], type="image/jpeg")
-
-                      # Use article date if available, else current UTC
-                      if date_tag and date_tag.has_attr("datetime"):
-                          pub_dt = date_tag["datetime"]
-                      else:
-                          pub_dt = datetime.utcnow().isoformat()
-                      pub_date_rfc2822 = email.utils.format_datetime(datetime.fromisoformat(pub_dt))
-                      ET.SubElement(item, "pubDate").text = pub_date_rfc2822
-
-              tree = ET.ElementTree(rss)
-              tree.write(TMP_FEED_FILE, encoding="utf-8", xml_declaration=True)
-
-              # Compare hashes
-              if file_hash(FEED_FILE) != file_hash(TMP_FEED_FILE):
-                  os.replace(TMP_FEED_FILE, FEED_FILE)
-                  print("Feed updated.")
-              else:
-                  os.remove(TMP_FEED_FILE)
-                  print("No changes in feed. Skipping commit.")
-
-          except Exception as e:
-              print(f"Warning: Failed to scrape Reuters ({e})")
-              if not os.path.exists(FEED_FILE):
-                  create_empty_feed(FEED_FILE)
-              print("Keeping existing feed if available.")
+          # Write feed
+          tree = ET.ElementTree(rss)
+          tree.write(FEED_FILE, encoding="UTF-8", xml_declaration=True)
           EOF
 
-      # 5. Commit and push feed if changed
-      - name: Commit and push feed
+      # 5. Commit and push RSS feed
+      - name: Commit and push RSS feed
         uses: ad-m/github-push-action@v0.8.0
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: main
-          directory: "."
-          force: false
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          force: true  # ensures overwrite even if protected
