@@ -1,69 +1,75 @@
-name: Update Reuters Tech RSS
+name: Update Tech RSS Feed
 
 on:
   schedule:
-    - cron: '0 * * * *'  # Runs every hour
+    - cron: '0 * * * *'  # every hour
   workflow_dispatch:
 
 jobs:
   update-rss:
     runs-on: ubuntu-latest
+
     steps:
-      # 1. Checkout the repository
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      # 2. Set up Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
-      # 3. Install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install feedparser lxml
+          pip install requests beautifulsoup4 feedgen
 
-      # 4. Fetch and update RSS feed
-      - name: Fetch Reuters Technology via Google News RSS
+      - name: Fetch tech news and build RSS
         run: |
           python << 'EOF'
-          import feedparser
-          import xml.etree.ElementTree as ET
-          from datetime import datetime
+          import requests
+          from bs4 import BeautifulSoup
+          from feedgen.feed import FeedGenerator
+          import datetime
+          import os
 
-          # Google News RSS for Reuters Technology
-          RSS_URL = "https://news.google.com/rss/search?q=Reuters+Technology&hl=en-US&gl=US&ceid=US:en"
+          RSS_FILE = "rss.xml"
 
-          # Parse feed
-          feed = feedparser.parse(RSS_URL)
+          try:
+              # Fetch Google News technology section
+              url = "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx1YlY4U0FtVnVLQUFQAQ?hl=en-US&gl=US&ceid=US:en"
+              r = requests.get(url, timeout=10)
+              r.raise_for_status()
 
-          # Create XML root
-          rss = ET.Element('rss', version='2.0')
-          channel = ET.SubElement(rss, 'channel')
-          ET.SubElement(channel, 'title').text = "Reuters Technology via Google News"
-          ET.SubElement(channel, 'link').text = "https://www.reuters.com/technology/"
-          ET.SubElement(channel, 'description').text = "Latest Reuters Technology articles"
-          ET.SubElement(channel, 'lastBuildDate').text = datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
+              soup = BeautifulSoup(r.content, "xml")
+              items = soup.find_all("item")[:15]
 
-          # Add items (limit to 15)
-          for entry in feed.entries[:15]:
-              item = ET.SubElement(channel, 'item')
-              ET.SubElement(item, 'title').text = entry.title
-              ET.SubElement(item, 'link').text = entry.link
-              ET.SubElement(item, 'pubDate').text = entry.published
-              ET.SubElement(item, 'description').text = entry.summary
+              fg = FeedGenerator()
+              fg.title("Tech News")
+              fg.link(href="https://news.google.com", rel="alternate")
+              fg.description("Latest technology news")
+              fg.language("en")
 
-          # Save feed.xml
-          tree = ET.ElementTree(rss)
-          tree.write('feed.xml', encoding='utf-8', xml_declaration=True)
+              for item in items:
+                  fe = fg.add_entry()
+                  fe.title(item.title.text)
+                  fe.link(href=item.link.text)
+                  fe.description(item.description.text)
+                  fe.pubDate(item.pubDate.text)
+
+              fg.rss_file(RSS_FILE)
+              print(f"RSS feed written to {RSS_FILE}")
+
+          except Exception as e:
+              print("Error fetching or generating RSS feed:", e)
+              if os.path.exists(RSS_FILE):
+                  print(f"Keeping existing feed {RSS_FILE}")
+              else:
+                  raise e
           EOF
 
-      # 5. Commit and push RSS feed
       - name: Commit and push RSS feed
-        uses: ad-m/github-push-action@v0.6.0
+        uses: ad-m/github-push-action@v0.15.0
         with:
           branch: main
+          force: true
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          commit_message: "Update Reuters Technology RSS feed"
