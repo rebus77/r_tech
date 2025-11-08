@@ -2,16 +2,17 @@ name: Update Tech RSS Feed
 
 on:
   schedule:
-    - cron: '*/20 * * * *'  # every 20 minutes
+    # Every 20 minutes
+    - cron: '*/20 * * * *'
   workflow_dispatch:
 
 jobs:
-  update-rss:
+  build-rss:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout repository
-      - name: Checkout repository
+      # 1. Checkout repo
+      - name: Checkout repo
         uses: actions/checkout@v3
 
       # 2. Set up Python
@@ -24,71 +25,66 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 feedgen feedparser
+          pip install requests beautifulsoup4 lxml
 
-      # 4. Run scraper and update RSS
-      - name: Scrape tech news and update RSS
+      # 4. Generate RSS feed
+      - name: Generate RSS feed
         run: |
           python << 'EOF'
           import requests
           from bs4 import BeautifulSoup
-          from feedgen.feed import FeedGenerator
-          import feedparser
-          import datetime
-          import os
+          from datetime import datetime
+          import xml.etree.ElementTree as ET
 
-          rss_file = "rss.xml"
-          fg = FeedGenerator()
-          fg.title("Tech News Feed")
-          fg.link(href="https://example.com")
-          fg.description("Aggregated technology news")
-          fg.language("en")
+          URL = "https://www.reuters.com/technology/"
 
-          existing_urls = set()
-          # Read existing RSS items if feed exists
-          if os.path.exists(rss_file):
-              feed = feedparser.parse(rss_file)
-              for entry in feed.entries:
-                  existing_urls.add(entry.link)
-                  fe = fg.add_entry()
-                  fe.title(entry.title)
-                  fe.link(href=entry.link)
-                  fe.pubDate(entry.published if 'published' in entry else datetime.datetime.now())
+          headers = {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+          }
 
-          # List of sites to scrape
-          sites = [
-              {"url": "https://www.theverge.com/tech", "article_tag": "h2", "link_tag": "a"},
-              {"url": "https://techcrunch.com/", "article_tag": "h2", "link_tag": "a"}
-          ]
+          try:
+              response = requests.get(URL, headers=headers)
+              response.raise_for_status()
+              soup = BeautifulSoup(response.text, "lxml")
 
-          headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+              # Create the RSS feed root
+              rss = ET.Element("rss", version="2.0")
+              channel = ET.SubElement(rss, "channel")
+              ET.SubElement(channel, "title").text = "Reuters Technology RSS"
+              ET.SubElement(channel, "link").text = "https://rebus77.github.io/r_tech/"
+              ET.SubElement(channel, "description").text = "RSS feed for Reuters Technology news"
 
-          for site in sites:
-              try:
-                  r = requests.get(site["url"], headers=headers, timeout=10)
-                  r.raise_for_status()
-                  soup = BeautifulSoup(r.text, 'html.parser')
-                  articles = soup.find_all(site["article_tag"], limit=10)
-                  for art in articles:
-                      a_tag = art.find(site["link_tag"])
-                      if a_tag and a_tag.get('href'):
-                          url = a_tag['href']
-                          if url not in existing_urls:
-                              fe = fg.add_entry()
-                              fe.title(a_tag.get_text(strip=True))
-                              fe.link(href=url)
-                              fe.pubDate(datetime.datetime.now())
-                              existing_urls.add(url)
-              except Exception as e:
-                  print(f"Failed to scrape {site['url']}: {e}")
+              # Find articles
+              articles = soup.select("article")[:15]  # top 15 articles
+              for art in articles:
+                  title_tag = art.find("h3")
+                  link_tag = art.find("a")
+                  desc_tag = art.find("p")
 
-          fg.rss_file(rss_file)
-          print(f"RSS feed updated at {rss_file}")
-          EOF
+                  if title_tag and link_tag:
+                      item = ET.SubElement(channel, "item")
+                      ET.SubElement(item, "title").text = title_tag.get_text(strip=True)
+                      link = link_tag.get("href")
+                      if link.startswith("/"):
+                          link = "https://www.reuters.com" + link
+                      ET.SubElement(item, "link").text = link
+                      ET.SubElement(item, "guid").text = link
+                      ET.SubElement(item, "description").text = desc_tag.get_text(strip=True) if desc_tag else ""
+                      ET.SubElement(item, "pubDate").text = datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S +0000")
+
+              tree = ET.ElementTree(rss)
+              tree.write("feed.xml", encoding="utf-8", xml_declaration=True)
+              print("RSS feed generated successfully.")
+
+          except Exception as e:
+              print(f"Error generating RSS feed: {e}")
+  EOF
 
       # 5. Commit and push RSS feed
       - name: Commit and push RSS feed
-        uses: ad-m/github-push-action@v0.6.0
+        uses: ad-m/github-push-action@v0.8.0
         with:
           branch: main
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          directory: .
+          force: true
