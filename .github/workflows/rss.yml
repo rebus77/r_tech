@@ -2,7 +2,7 @@ name: Update Tech RSS Feed
 
 on:
   schedule:
-    - cron: '0 * * * *'  # every hour
+    - cron: '*/20 * * * *'  # every 20 minutes
   workflow_dispatch:
 
 jobs:
@@ -10,66 +10,85 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1. Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v3
 
+      # 2. Set up Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
+      # 3. Install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 feedgen
+          pip install requests beautifulsoup4 feedgen feedparser
 
-      - name: Fetch tech news and build RSS
+      # 4. Run scraper and update RSS
+      - name: Scrape tech news and update RSS
         run: |
           python << 'EOF'
           import requests
           from bs4 import BeautifulSoup
           from feedgen.feed import FeedGenerator
+          import feedparser
           import datetime
           import os
 
-          RSS_FILE = "rss.xml"
+          rss_file = "rss.xml"
+          fg = FeedGenerator()
+          fg.title("Tech News Feed")
+          fg.link(href="https://example.com")
+          fg.description("Aggregated technology news")
+          fg.language("en")
 
-          try:
-              # Fetch Google News technology section
-              url = "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx1YlY4U0FtVnVLQUFQAQ?hl=en-US&gl=US&ceid=US:en"
-              r = requests.get(url, timeout=10)
-              r.raise_for_status()
-
-              soup = BeautifulSoup(r.content, "xml")
-              items = soup.find_all("item")[:15]
-
-              fg = FeedGenerator()
-              fg.title("Tech News")
-              fg.link(href="https://news.google.com", rel="alternate")
-              fg.description("Latest technology news")
-              fg.language("en")
-
-              for item in items:
+          existing_urls = set()
+          # Read existing RSS items if feed exists
+          if os.path.exists(rss_file):
+              feed = feedparser.parse(rss_file)
+              for entry in feed.entries:
+                  existing_urls.add(entry.link)
                   fe = fg.add_entry()
-                  fe.title(item.title.text)
-                  fe.link(href=item.link.text)
-                  fe.description(item.description.text)
-                  fe.pubDate(item.pubDate.text)
+                  fe.title(entry.title)
+                  fe.link(href=entry.link)
+                  fe.pubDate(entry.published if 'published' in entry else datetime.datetime.now())
 
-              fg.rss_file(RSS_FILE)
-              print(f"RSS feed written to {RSS_FILE}")
+          # List of sites to scrape
+          sites = [
+              {"url": "https://www.theverge.com/tech", "article_tag": "h2", "link_tag": "a"},
+              {"url": "https://techcrunch.com/", "article_tag": "h2", "link_tag": "a"}
+          ]
 
-          except Exception as e:
-              print("Error fetching or generating RSS feed:", e)
-              if os.path.exists(RSS_FILE):
-                  print(f"Keeping existing feed {RSS_FILE}")
-              else:
-                  raise e
+          headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
+          for site in sites:
+              try:
+                  r = requests.get(site["url"], headers=headers, timeout=10)
+                  r.raise_for_status()
+                  soup = BeautifulSoup(r.text, 'html.parser')
+                  articles = soup.find_all(site["article_tag"], limit=10)
+                  for art in articles:
+                      a_tag = art.find(site["link_tag"])
+                      if a_tag and a_tag.get('href'):
+                          url = a_tag['href']
+                          if url not in existing_urls:
+                              fe = fg.add_entry()
+                              fe.title(a_tag.get_text(strip=True))
+                              fe.link(href=url)
+                              fe.pubDate(datetime.datetime.now())
+                              existing_urls.add(url)
+              except Exception as e:
+                  print(f"Failed to scrape {site['url']}: {e}")
+
+          fg.rss_file(rss_file)
+          print(f"RSS feed updated at {rss_file}")
           EOF
 
+      # 5. Commit and push RSS feed
       - name: Commit and push RSS feed
-        uses: ad-m/github-push-action@v0.15.0
+        uses: ad-m/github-push-action@v0.6.0
         with:
           branch: main
-          force: true
           github_token: ${{ secrets.GITHUB_TOKEN }}
