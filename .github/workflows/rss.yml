@@ -1,7 +1,35 @@
+name: Generate Reuters Technology RSS
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: '*/20 * * * *'  # every 20 minutes
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout repository
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # 2. Setup Python
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      # 3. Install dependencies
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests feedgen python-dateutil lxml
+
       # 4. Generate RSS feed from Reuters JSON API
       - name: Generate RSS feed
+        id: generate
         run: |
-          python << 'EOF'
           import requests
           from feedgen.feed import FeedGenerator
           from dateutil.parser import parse
@@ -51,8 +79,13 @@
               })
 
           # Merge with existing, remove duplicates
+          existing_links = {x['link'] for x in existing_items}
           combined = new_articles + [x for x in existing_items if x['link'] not in {a['link'] for a in new_articles}]
           combined = combined[:max_items]
+
+          # Count new articles
+          added_count = sum(1 for a in new_articles if a['link'] not in existing_links)
+          print(f"New articles added: {added_count}")
 
           # Add items to feed
           for article in combined:
@@ -63,13 +96,31 @@
               fe.description(article['description'])
               fe.pubDate(article['pubDate'])
 
-          # Add timestamp entry for feed update
-          timestamp_entry = fg.add_entry()
-          timestamp_entry.id('feed-update-time')
-          timestamp_entry.title('Feed last updated')
-          timestamp_entry.description(f'RSS feed updated at {datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")}')
-          timestamp_entry.pubDate(datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S +0000"))
+          # Write feed to a temporary file
+          tmp_file = 'feed_tmp.xml'
+          fg.rss_file(tmp_file)
 
-          # Write feed
-          fg.rss_file(feed_file)
-          EOF
+          # Compare with existing feed; only replace if different
+          update_needed = True
+          if os.path.exists(feed_file):
+              with open(feed_file, 'r', encoding='utf-8') as f_old, open(tmp_file, 'r', encoding='utf-8') as f_new:
+                  update_needed = f_old.read() != f_new.read()
+
+          if update_needed:
+              os.replace(tmp_file, feed_file)
+          else:
+              os.remove(tmp_file)
+
+          # Set GitHub Action outputs
+          print(f"::set-output name=update_needed::{str(update_needed).lower()}")
+          print(f"::set-output name=new_articles::{added_count}")
+        shell: python
+
+      # 5. Commit and push RSS feed if changed
+      - name: Commit and push RSS feed
+        if: steps.generate.outputs.update_needed == 'true'
+        uses: ad-m/github-push-action@v0.6.0
+        with:
+          branch: main
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          commit_message: "Update RSS feed"
