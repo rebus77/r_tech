@@ -24,68 +24,96 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests feedgen python-dateutil lxml
+          pip install requests beautifulsoup4 feedgen python-dateutil lxml
 
-      # 4. Generate RSS feed from Reuters JSON API
+      # 4. Generate RSS feed
       - name: Generate RSS feed
-        id: generate
         run: |
+          python << 'EOF'
           import requests
+          from bs4 import BeautifulSoup
           from feedgen.feed import FeedGenerator
           from dateutil.parser import parse
           import datetime
           import os
-          import xml.etree.ElementTree as ET
+          import json
 
           feed_file = 'feed.xml'
+          seen_file = 'seen.json'
           max_items = 50
+
+          # Load seen URLs
+          if os.path.exists(seen_file):
+              with open(seen_file, 'r') as f:
+                  seen_urls = set(json.load(f))
+          else:
+              seen_urls = set()
 
           fg = FeedGenerator()
           fg.title('Reuters Technology RSS')
           fg.link(href='https://rebus77.github.io/r_tech/')
-          fg.description('RSS feed for Reuters Technology news')
+          fg.description('Custom RSS feed for Reuters Technology news')
 
           # Load existing feed items
           existing_items = []
           if os.path.exists(feed_file):
+              import xml.etree.ElementTree as ET
               tree = ET.parse(feed_file)
               root = tree.getroot()
               for item in root.findall('channel/item'):
+                  link = item.find('link').text
                   existing_items.append({
                       'title': item.find('title').text,
-                      'link': item.find('link').text,
+                      'link': link,
                       'description': item.find('description').text if item.find('description') is not None else '',
                       'pubDate': item.find('pubDate').text
                   })
+                  seen_urls.add(link)
 
-          # Fetch articles from Reuters JSON API
-          url = 'https://www.reuters.com/pf/api/v3/content/fetch/articles-by-section?section=technology&limit=15'
+          # Fetch articles
+          url = 'https://www.reuters.com/technology/'
           headers = {'User-Agent': 'Mozilla/5.0'}
           r = requests.get(url, headers=headers)
           r.raise_for_status()
-          data = r.json()
+          soup = BeautifulSoup(r.text, 'lxml')
 
           new_articles = []
-          for item in data.get('result', {}).get('articles', []):
-              title = item.get('title')
-              link = 'https://www.reuters.com' + item.get('canonicalUrl', '')
-              description = item.get('summary', '')
-              pub_dt = parse(item.get('publishedTime')).strftime("%a, %d %b %Y %H:%M:%S %z") if item.get('publishedTime') else datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S +0000")
+
+          # Look for article blocks
+          articles = soup.select('article, div[data-testid="story"]')[:20]  # top 20
+
+          for item in articles:
+              a_tag = item.find('a', href=True)
+              if not a_tag:
+                  continue
+              link = a_tag['href']
+              if link.startswith('/'):
+                  link = 'https://www.reuters.com' + link
+              if link in seen_urls:
+                  continue  # skip already seen
+              # Title
+              title_tag = item.select_one('h3, h2')
+              title = title_tag.get_text(strip=True) if title_tag else a_tag.get_text(strip=True)
+              # Description
+              desc_tag = item.select_one('p')
+              description = desc_tag.get_text(strip=True) if desc_tag else ''
+              # Publication date
+              time_tag = item.find('time')
+              if time_tag and time_tag.has_attr('datetime'):
+                  pub_dt = parse(time_tag['datetime']).strftime("%a, %d %b %Y %H:%M:%S %z")
+              else:
+                  pub_dt = datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S +0000")
               new_articles.append({
                   'title': title,
                   'link': link,
                   'description': description,
                   'pubDate': pub_dt
               })
+              seen_urls.add(link)
 
-          # Merge with existing, remove duplicates
-          existing_links = {x['link'] for x in existing_items}
-          combined = new_articles + [x for x in existing_items if x['link'] not in {a['link'] for a in new_articles}]
+          # Merge new articles with existing, keeping max_items
+          combined = new_articles + existing_items
           combined = combined[:max_items]
-
-          # Count new articles
-          added_count = sum(1 for a in new_articles if a['link'] not in existing_links)
-          print(f"New articles added: {added_count}")
 
           # Add items to feed
           for article in combined:
@@ -96,29 +124,16 @@ jobs:
               fe.description(article['description'])
               fe.pubDate(article['pubDate'])
 
-          # Write feed to a temporary file
-          tmp_file = 'feed_tmp.xml'
-          fg.rss_file(tmp_file)
+          # Write feed
+          fg.rss_file(feed_file)
 
-          # Compare with existing feed; only replace if different
-          update_needed = True
-          if os.path.exists(feed_file):
-              with open(feed_file, 'r', encoding='utf-8') as f_old, open(tmp_file, 'r', encoding='utf-8') as f_new:
-                  update_needed = f_old.read() != f_new.read()
+          # Save updated seen URLs
+          with open(seen_file, 'w') as f:
+              json.dump(list(seen_urls), f)
+          EOF
 
-          if update_needed:
-              os.replace(tmp_file, feed_file)
-          else:
-              os.remove(tmp_file)
-
-          # Set GitHub Action outputs
-          print(f"::set-output name=update_needed::{str(update_needed).lower()}")
-          print(f"::set-output name=new_articles::{added_count}")
-        shell: python
-
-      # 5. Commit and push RSS feed if changed
+      # 5. Commit and push RSS feed
       - name: Commit and push RSS feed
-        if: steps.generate.outputs.update_needed == 'true'
         uses: ad-m/github-push-action@v0.6.0
         with:
           branch: main
