@@ -24,14 +24,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 feedgen python-dateutil lxml
+          pip install requests feedgen python-dateutil
 
-      # 4. Generate RSS feed
+      # 4. Generate RSS feed from Reuters JSON API
       - name: Generate RSS feed
         run: |
           python << 'EOF'
           import requests
-          from bs4 import BeautifulSoup
           from feedgen.feed import FeedGenerator
           from dateutil.parser import parse
           import datetime
@@ -48,47 +47,37 @@ jobs:
 
           # Load existing feed items
           existing_items = []
+          existing_links = set()
           if os.path.exists(feed_file):
               tree = ET.parse(feed_file)
               root = tree.getroot()
               for item in root.findall('channel/item'):
+                  link = item.find('link').text
+                  pub_date_text = item.find('pubDate').text
+                  pub_date = parse(pub_date_text) if pub_date_text else datetime.datetime.utcnow()
                   existing_items.append({
                       'title': item.find('title').text,
-                      'link': item.find('link').text,
+                      'link': link,
                       'description': item.find('description').text if item.find('description') is not None else '',
-                      'pubDate': item.find('pubDate').text
+                      'pubDate': pub_date
                   })
+                  existing_links.add(link)
 
-          # Fetch articles
-          url = 'https://www.reuters.com/technology/'
+          # Fetch articles from Reuters JSON API
+          url = "https://www.reuters.com/pf/api/v3/content/fetch/articles-by-section?section=technology"
           headers = {'User-Agent': 'Mozilla/5.0'}
           r = requests.get(url, headers=headers)
-          soup = BeautifulSoup(r.text, 'lxml')
+          data = r.json()
 
           new_articles = []
 
-          # Look for articles
-          articles = soup.select('article, div[data-testid="story"]')[:15]  # top 15
-
-          for item in articles:
-              a_tag = item.find('a', href=True)
-              if not a_tag:
-                  continue
-              link = a_tag['href']
-              if link.startswith('/'):
-                  link = 'https://www.reuters.com' + link
-              # Title
-              title_tag = item.select_one('h3, h2')
-              title = title_tag.get_text(strip=True) if title_tag else a_tag.get_text(strip=True)
-              # Description
-              desc_tag = item.select_one('p')
-              description = desc_tag.get_text(strip=True) if desc_tag else ''
-              # Publication date
-              time_tag = item.find('time')
-              if time_tag and time_tag.has_attr('datetime'):
-                  pub_dt = parse(time_tag['datetime']).strftime("%a, %d %b %Y %H:%M:%S %z")
-              else:
-                  pub_dt = datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S +0000")
+          for article in data.get('result', {}).get('articles', [])[:20]:
+              link = "https://www.reuters.com" + article['canonical_url']
+              if link in existing_links:
+                  continue  # skip articles already in feed
+              title = article.get('title', 'No Title')
+              description = article.get('summary', '')
+              pub_dt = parse(article['published_time']) if article.get('published_time') else datetime.datetime.utcnow()
               new_articles.append({
                   'title': title,
                   'link': link,
@@ -96,9 +85,11 @@ jobs:
                   'pubDate': pub_dt
               })
 
-          # Merge with existing, remove duplicates
-          combined = new_articles + [x for x in existing_items if x['link'] not in {a['link'] for a in new_articles}]
-          combined = combined[:max_items]  # keep latest 50
+          # Combine new and existing articles
+          combined = new_articles + existing_items
+          # Sort by pubDate, newest first
+          combined.sort(key=lambda x: x['pubDate'], reverse=True)
+          combined = combined[:max_items]
 
           # Add items to feed
           for article in combined:
@@ -107,7 +98,7 @@ jobs:
               fe.link(href=article['link'])
               fe.title(article['title'])
               fe.description(article['description'])
-              fe.pubDate(article['pubDate'])
+              fe.pubDate(article['pubDate'].strftime("%a, %d %b %Y %H:%M:%S %z"))
 
           # Write feed
           fg.rss_file(feed_file)
@@ -119,5 +110,5 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "actions@github.com"
           git add feed.xml
-          git commit -m "Update RSS feed"
-          git push https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main || echo "No changes to commit"
+          git commit -m "Update RSS feed" || echo "No changes to commit"
+          git push https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main
