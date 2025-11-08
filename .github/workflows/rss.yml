@@ -1,39 +1,96 @@
-name: Update Reuters Tech RSS Feed
+name: Update Reuters Technology RSS
 
 on:
-  schedule:
-    - cron: '*/20 * * * *'  # Every 20 minutes
   workflow_dispatch:
+  schedule:
+    - cron: "*/20 * * * *"  # every 20 minutes
 
 jobs:
-  build-rss:
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Setup Node.js (Puppeteer runs on Node)
+      # 2️⃣ Setup Node.js
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: "20"
 
-      # 3️⃣ Install required npm packages
+      # 3️⃣ Install dependencies
       - name: Install dependencies
         run: |
-          npm init -y
-          npm install puppeteer rss fs-extra
+          npm install puppeteer feedgen dayjs
 
-      # 4️⃣ Generate RSS feed with Puppeteer scraper
-      - name: Generate RSS feed
-        run: node scripts/generate-rss.js
+      # 4️⃣ Generate RSS feed with Puppeteer
+      - name: Generate Reuters Tech RSS
+        run: |
+          mkdir -p scripts
+          cat > scripts/generate-rss.js <<'EOF'
+          import puppeteer from "puppeteer";
+          import { Feed } from "feed";
+          import fs from "fs";
+          import dayjs from "dayjs";
 
-      # 5️⃣ Commit and push generated feed
+          const URL = "https://www.reuters.com/technology/";
+
+          (async () => {
+            const browser = await puppeteer.launch({ headless: "new", args: ["--no-sandbox"] });
+            const page = await browser.newPage();
+            await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+
+            const articles = await page.$$eval("article", (nodes) =>
+              nodes.slice(0, 15).map((el) => {
+                const title = el.querySelector("h2, h3")?.innerText?.trim() || "";
+                let link = el.querySelector("a")?.href || "";
+                if (link.startsWith("/")) link = "https://www.reuters.com" + link;
+                const description = el.querySelector("p")?.innerText?.trim() || "";
+                const date = el.querySelector("time")?.getAttribute("datetime") || new Date().toISOString();
+                return { title, link, description, date };
+              })
+            );
+
+            await browser.close();
+
+            const feed = new Feed({
+              title: "Reuters Technology RSS",
+              description: "Live Reuters Technology updates via Puppeteer scraper",
+              id: "https://www.reuters.com/technology/",
+              link: "https://www.reuters.com/technology/",
+              language: "en",
+              favicon: "https://www.reuters.com/pf/resources/images/reuters/favicon/favicon.ico",
+              updated: new Date(),
+            });
+
+            for (const a of articles) {
+              if (!a.title || !a.link) continue;
+              feed.addItem({
+                title: a.title,
+                id: a.link,
+                link: a.link,
+                description: a.description,
+                date: dayjs(a.date).toDate(),
+              });
+            }
+
+            fs.writeFileSync("feed.xml", feed.rss2());
+            console.log("✅ RSS feed generated successfully:", articles.length, "items");
+          })();
+          EOF
+
+          node scripts/generate-rss.js
+
+      # 5️⃣ Commit and push RSS feed to the same branch as GitHub Pages
       - name: Commit and push RSS feed
         uses: ad-m/github-push-action@v0.8.0
         with:
-          branch: main
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: main
+          force: true
           directory: .
+EOF
