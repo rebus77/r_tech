@@ -1,135 +1,70 @@
-name: Generate Reuters Technology RSS
+name: Update Tech RSS
 
 on:
-  workflow_dispatch: {}
   schedule:
-    - cron: '*/20 * * * *'  # every 20 minutes
+    - cron: '0 * * * *'  # runs every hour
+  workflow_dispatch:
 
 jobs:
-  build:
+  build-rss:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout repository
+      # 1. Checkout repo
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      # 2. Setup Python
+      # 2. Set up Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.x'
+          python-version: '3.11'
 
       # 3. Install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 feedgen python-dateutil lxml
+          pip install requests feedgen
 
-      # 4. Generate RSS feed
+      # 4. Generate RSS feed using NewsAPI
       - name: Generate RSS feed
+        env:
+          NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}  # store your NewsAPI key in GitHub secrets
         run: |
           python << 'EOF'
-          import requests
-          from bs4 import BeautifulSoup
-          from feedgen.feed import FeedGenerator
-          from dateutil.parser import parse
-          import datetime
           import os
-          import json
+          import requests
+          from feedgen.feed import FeedGenerator
+          from datetime import datetime
 
-          feed_file = 'feed.xml'
-          seen_file = 'seen.json'
-          max_items = 50
+          NEWSAPI_KEY = os.environ['NEWSAPI_KEY']
+          URL = 'https://newsapi.org/v2/top-headlines'
+          params = {
+              'sources': 'reuters',
+              'category': 'technology',
+              'pageSize': 15,
+              'apiKey': NEWSAPI_KEY
+          }
 
-          # Load seen URLs
-          if os.path.exists(seen_file):
-              with open(seen_file, 'r') as f:
-                  seen_urls = set(json.load(f))
-          else:
-              seen_urls = set()
+          response = requests.get(URL, params=params)
+          response.raise_for_status()
+          data = response.json()
+          articles = data.get('articles', [])
 
           fg = FeedGenerator()
-          fg.title('Reuters Technology RSS')
-          fg.link(href='https://rebus77.github.io/r_tech/')
-          fg.description('Custom RSS feed for Reuters Technology news')
+          fg.title('Reuters Technology News')
+          fg.link(href='https://www.reuters.com/technology/', rel='alternate')
+          fg.description('Latest technology news from Reuters')
+          fg.language('en')
 
-          # Load existing feed items
-          existing_items = []
-          if os.path.exists(feed_file):
-              import xml.etree.ElementTree as ET
-              tree = ET.parse(feed_file)
-              root = tree.getroot()
-              for item in root.findall('channel/item'):
-                  link = item.find('link').text
-                  existing_items.append({
-                      'title': item.find('title').text,
-                      'link': link,
-                      'description': item.find('description').text if item.find('description') is not None else '',
-                      'pubDate': item.find('pubDate').text
-                  })
-                  seen_urls.add(link)
-
-          # Fetch articles
-          url = 'https://www.reuters.com/technology/'
-          headers = {'User-Agent': 'Mozilla/5.0'}
-          r = requests.get(url, headers=headers)
-          r.raise_for_status()
-          soup = BeautifulSoup(r.text, 'lxml')
-
-          new_articles = []
-
-          # Look for article blocks
-          articles = soup.select('article, div[data-testid="story"]')[:20]  # top 20
-
-          for item in articles:
-              a_tag = item.find('a', href=True)
-              if not a_tag:
-                  continue
-              link = a_tag['href']
-              if link.startswith('/'):
-                  link = 'https://www.reuters.com' + link
-              if link in seen_urls:
-                  continue  # skip already seen
-              # Title
-              title_tag = item.select_one('h3, h2')
-              title = title_tag.get_text(strip=True) if title_tag else a_tag.get_text(strip=True)
-              # Description
-              desc_tag = item.select_one('p')
-              description = desc_tag.get_text(strip=True) if desc_tag else ''
-              # Publication date
-              time_tag = item.find('time')
-              if time_tag and time_tag.has_attr('datetime'):
-                  pub_dt = parse(time_tag['datetime']).strftime("%a, %d %b %Y %H:%M:%S %z")
-              else:
-                  pub_dt = datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S +0000")
-              new_articles.append({
-                  'title': title,
-                  'link': link,
-                  'description': description,
-                  'pubDate': pub_dt
-              })
-              seen_urls.add(link)
-
-          # Merge new articles with existing, keeping max_items
-          combined = new_articles + existing_items
-          combined = combined[:max_items]
-
-          # Add items to feed
-          for article in combined:
+          for article in articles:
               fe = fg.add_entry()
-              fe.id(article['link'])
-              fe.link(href=article['link'])
-              fe.title(article['title'])
-              fe.description(article['description'])
-              fe.pubDate(article['pubDate'])
+              fe.title(article.get('title', 'No title'))
+              fe.link(href=article.get('url', ''))
+              fe.description(article.get('description', ''))
+              fe.pubDate(article.get('publishedAt', datetime.utcnow().isoformat()))
 
-          # Write feed
-          fg.rss_file(feed_file)
-
-          # Save updated seen URLs
-          with open(seen_file, 'w') as f:
-              json.dump(list(seen_urls), f)
+          fg.rss_file('rss.xml')
           EOF
 
       # 5. Commit and push RSS feed
