@@ -1,78 +1,39 @@
-name: Update Tech RSS Feed
+name: Update Reuters Tech RSS Feed
 
 on:
   schedule:
-    # Every 20 minutes
-    - cron: '*/20 * * * *'
+    - cron: '*/20 * * * *'  # Every 20 minutes
   workflow_dispatch:
 
 jobs:
-  update-rss:
+  build-rss:
     runs-on: ubuntu-latest
+
     steps:
-      # 1. Checkout repo
+      # 1️⃣ Checkout repository
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      # 2. Set up Python
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      # 2️⃣ Setup Node.js (Puppeteer runs on Node)
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
         with:
-          python-version: "3.11"
+          node-version: 20
 
-      # 3. Install dependencies
+      # 3️⃣ Install required npm packages
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install requests beautifulsoup4
+          npm init -y
+          npm install puppeteer rss fs-extra
 
-      # 4. Generate RSS feed
+      # 4️⃣ Generate RSS feed with Puppeteer scraper
       - name: Generate RSS feed
-        run: |
-          python << 'EOF'
-          import requests
-          from bs4 import BeautifulSoup
-          import datetime
-          import xml.etree.ElementTree as ET
+        run: node scripts/generate-rss.js
 
-          FEED_FILE = "feed.xml"  # GitHub Pages root
-          RSS_TITLE = "Reuters Technology RSS"
-          RSS_LINK = "https://rebus77.github.io/r_tech/"
-          RSS_DESC = "RSS feed for Reuters Technology news"
-
-          # Base RSS XML
-          rss = ET.Element("rss", version="2.0")
-          channel = ET.SubElement(rss, "channel")
-          ET.SubElement(channel, "title").text = RSS_TITLE
-          ET.SubElement(channel, "link").text = RSS_LINK
-          ET.SubElement(channel, "description").text = RSS_DESC
-
-          # Scrape Reuters Technology
-          url = "https://www.reuters.com/technology/"
-          headers = {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-          }
-          r = requests.get(url, headers=headers)
-          if r.status_code != 200:
-              print(f"HTTP Error: {r.status_code}")
-          else:
-              soup = BeautifulSoup(r.text, "html.parser")
-              articles = soup.select("article h3 a")[:15]  # adjust selector as needed
-              for a in articles:
-                  item = ET.SubElement(channel, "item")
-                  ET.SubElement(item, "title").text = a.get_text(strip=True)
-                  ET.SubElement(item, "link").text = a['href'] if a['href'].startswith("http") else "https://www.reuters.com" + a['href']
-                  ET.SubElement(item, "pubDate").text = datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
-
-          # Write feed
-          tree = ET.ElementTree(rss)
-          tree.write(FEED_FILE, encoding="UTF-8", xml_declaration=True)
-          EOF
-
-      # 5. Commit and push RSS feed
+      # 5️⃣ Commit and push generated feed
       - name: Commit and push RSS feed
         uses: ad-m/github-push-action@v0.8.0
         with:
           branch: main
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          force: true  # ensures overwrite even if protected
+          directory: .
