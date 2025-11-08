@@ -1,59 +1,59 @@
 name: Generate Reuters Technology RSS
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
   schedule:
-    - cron: '*/20 * * * *'   # every 20 minutes
+    - cron: '*/20 * * * *'  # every 20 minutes
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      # Step 1: Checkout the repo
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
+      # Step 2: Set up Python
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
           python-version: '3.x'
 
+      # Step 3: Install dependencies
       - name: Install dependencies
-        run: pip install requests beautifulsoup4 feedgen python-dateutil
-
-      - name: Generate RSS
         run: |
-          python <<'PYCODE'
-          import requests
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 feedgen python-dateutil
+
+      # Step 4: Generate RSS feed
+      - name: Generate RSS feed
+        run: |
+          python << 'EOF'
+          import requests, datetime
           from bs4 import BeautifulSoup
           from feedgen.feed import FeedGenerator
           from dateutil.parser import parse
-          import datetime
-
-          URL = "https://www.reuters.com/technology/"
-          HEADERS = {"User-Agent": "Mozilla/5.0"}
-          html = requests.get(URL, headers=HEADERS).text
-          soup = BeautifulSoup(html, "html.parser")
 
           fg = FeedGenerator()
-          fg.id(URL)
-          fg.title("Reuters Technology")
-          fg.link(href=URL, rel="alternate")
-          fg.description("Latest Technology news from Reuters")
-          fg.language("en")
+          fg.title('Reuters Technology RSS')
+          fg.link(href='https://rebus77.github.io/r_tech/')
+          fg.description('RSS feed for Reuters Technology news')
 
-          for item in soup.select("article")[:15]:
-              a_tag = item.select_one("a[data-testid='Heading']")
+          url = 'https://www.reuters.com/technology/'
+          r = requests.get(url)
+          soup = BeautifulSoup(r.text, 'html.parser')
+
+          # Updated scraper for Reuters
+          articles = soup.find_all("div", attrs={"data-testid": "story"})
+          for item in articles[:15]:
+              a_tag = item.find("a")
               if not a_tag:
                   continue
-              link = "https://www.reuters.com" + a_tag.get('href', '')
+              link = "https://www.reuters.com" + a_tag.get("href", "")
               title = a_tag.get_text(strip=True)
-
-              time_tag = item.select_one("time")
-              if time_tag and time_tag.get("datetime"):
-                  pub_dt = parse(time_tag["datetime"])
-              else:
-                  pub_dt = datetime.datetime.utcnow()
+              time_tag = item.find("time")
+              pub_dt = parse(time_tag["datetime"]) if time_tag else datetime.datetime.utcnow()
 
               fe = fg.add_entry()
               fe.id(link)
@@ -61,13 +61,14 @@ jobs:
               fe.title(title)
               fe.pubDate(pub_dt)
 
-          fg.rss_file("feed.xml")
-          PYCODE
+          fg.rss_file('feed.xml')
+          EOF
 
-      - name: Commit feed if changed
+      # Step 5: Commit and push RSS feed (this is the push step!)
+      - name: Commit and push RSS feed
         run: |
+          git config --global user.name "github-actions[bot]"
           git config --global user.email "actions@github.com"
-          git config --global user.name "GitHub Actions"
           git add feed.xml
-          git diff --cached --quiet || git commit -m "Update RSS feed"
-          git push
+          git commit -m "Update RSS feed"
+          git push https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main
