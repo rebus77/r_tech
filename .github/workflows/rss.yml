@@ -25,7 +25,7 @@ jobs:
       # 3️⃣ Install dependencies
       - name: Install dependencies
         run: |
-          npm install puppeteer feedgen dayjs
+          npm install puppeteer feed dayjs
 
       # 4️⃣ Generate RSS feed with Puppeteer
       - name: Generate Reuters Tech RSS
@@ -57,6 +57,11 @@ jobs:
 
             await browser.close();
 
+            if (!articles.length) {
+              console.error("⚠️ No articles found — keeping old feed if exists.");
+              process.exit(0);
+            }
+
             const feed = new Feed({
               title: "Reuters Technology RSS",
               description: "Live Reuters Technology updates via Puppeteer scraper",
@@ -65,6 +70,9 @@ jobs:
               language: "en",
               favicon: "https://www.reuters.com/pf/resources/images/reuters/favicon/favicon.ico",
               updated: new Date(),
+              feedLinks: {
+                rss: "https://rebus77.github.io/r_tech/feed.xml",
+              },
             });
 
             for (const a of articles) {
