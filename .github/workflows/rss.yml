@@ -1,105 +1,214 @@
 name: Generate Reuters Technology RSS
-
 on:
   workflow_dispatch: {}
   schedule:
     - cron: '*/20 * * * *'  # every 20 minutes
-
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
-
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.x'
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests feedgen python-dateutil lxml
-
+          pip install requests feedgen python-dateutil lxml beautifulsoup4
       - name: Generate RSS feed
         run: |
           python << 'EOF'
-          import requests, json
+          import requests, json, time, random
           from feedgen.feed import FeedGenerator
           from dateutil.parser import parse
           import datetime
           import os
           import xml.etree.ElementTree as ET
-
+          from bs4 import BeautifulSoup
+          
           feed_file = 'feed.xml'
           max_items = 50
-
+          
           fg = FeedGenerator()
           fg.title('Reuters Technology RSS')
           fg.link(href='https://rebus77.github.io/r_tech/')
           fg.description('RSS feed for Reuters Technology news')
-
+          
           # Load existing feed items
           existing_items = []
           if os.path.exists(feed_file):
-              tree = ET.parse(feed_file)
-              root = tree.getroot()
-              for item in root.findall('channel/item'):
-                  existing_items.append({
-                      'title': item.find('title').text,
-                      'link': item.find('link').text,
-                      'description': item.find('description').text if item.find('description') is not None else '',
-                      'pubDate': item.find('pubDate').text
-                  })
-
-          # Fetch JSON embedded in Reuters Technology page
-          url = 'https://www.reuters.com/technology/'
-          headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-          r = requests.get(url, headers=headers)
-          r.raise_for_status()
-          # Look for initial JSON embedded in <script type="application/ld+json">
-          json_articles = []
-          import re
-          matches = re.findall(r'<script type="application/ld\+json">(.+?)</script>', r.text, re.DOTALL)
-          for m in matches:
               try:
-                  data = json.loads(m)
-                  if isinstance(data, dict) and data.get('@type') == 'ItemList':
-                      for item in data.get('itemListElement', []):
-                          article = item.get('item', {})
-                          json_articles.append({
-                              'title': article.get('headline', ''),
-                              'link': article.get('url', ''),
-                              'description': article.get('description', ''),
-                              'pubDate': parse(article.get('datePublished', datetime.datetime.utcnow().isoformat())).strftime("%a, %d %b %Y %H:%M:%S %z")
+                  tree = ET.parse(feed_file)
+                  root = tree.getroot()
+                  for item in root.findall('.//{*}item'):
+                      title_elem = item.find('{*}title')
+                      link_elem = item.find('{*}link')
+                      desc_elem = item.find('{*}description')
+                      date_elem = item.find('{*}pubDate')
+                      
+                      if title_elem is not None and link_elem is not None:
+                          existing_items.append({
+                              'title': title_elem.text,
+                              'link': link_elem.text,
+                              'description': desc_elem.text if desc_elem is not None else '',
+                              'pubDate': date_elem.text if date_elem is not None else datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S +0000")
                           })
-              except Exception:
-                  continue
-
-          new_articles = []
-          for a in json_articles[:15]:
-              if a['link'].startswith('/'):
-                  a['link'] = 'https://www.reuters.com' + a['link']
-              new_articles.append(a)
-
-          # Merge with existing, remove duplicates
-          combined = new_articles + [x for x in existing_items if x['link'] not in {a['link'] for a in new_articles}]
-          combined = combined[:max_items]  # keep latest 50
-
-          # Add items to feed
-          for article in combined:
-              fe = fg.add_entry()
-              fe.id(article['link'])
-              fe.link(href=article['link'])
-              fe.title(article['title'])
-              fe.description(article['description'])
-              fe.pubDate(article['pubDate'])
-
-          fg.rss_file(feed_file)
+              except Exception as e:
+                  print(f"Error loading existing feed: {e}")
+          
+          # Fetch Reuters Technology page with better headers
+          url = 'https://www.reuters.com/technology/'
+          headers = {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+              'Accept-Language': 'en-US,en;q=0.9',
+              'Accept-Encoding': 'gzip, deflate, br',
+              'DNT': '1',
+              'Connection': 'keep-alive',
+              'Upgrade-Insecure-Requests': '1',
+              'Sec-Fetch-Dest': 'document',
+              'Sec-Fetch-Mode': 'navigate',
+              'Sec-Fetch-Site': 'none',
+              'Cache-Control': 'max-age=0'
+          }
+          
+          # Add random delay to appear more human-like
+          time.sleep(random.uniform(1, 3))
+          
+          try:
+              session = requests.Session()
+              r = session.get(url, headers=headers, timeout=30, allow_redirects=True)
+              r.raise_for_status()
+              
+              # Try JSON-LD extraction first
+              json_articles = []
+              import re
+              matches = re.findall(r'<script type="application/ld\+json">(.+?)</script>', r.text, re.DOTALL)
+              
+              for m in matches:
+                  try:
+                      data = json.loads(m)
+                      if isinstance(data, dict) and data.get('@type') == 'ItemList':
+                          for item in data.get('itemListElement', []):
+                              article = item.get('item', {})
+                              json_articles.append({
+                                  'title': article.get('headline', ''),
+                                  'link': article.get('url', ''),
+                                  'description': article.get('description', ''),
+                                  'pubDate': parse(article.get('datePublished', datetime.datetime.utcnow().isoformat())).strftime("%a, %d %b %Y %H:%M:%S +0000")
+                              })
+                  except Exception as e:
+                      print(f"Error parsing JSON-LD: {e}")
+                      continue
+              
+              # Fallback: HTML parsing if JSON-LD fails
+              if not json_articles:
+                  print("JSON-LD extraction failed, trying HTML parsing...")
+                  soup = BeautifulSoup(r.text, 'html.parser')
+                  
+                  # Find article links
+                  article_links = soup.find_all('a', {'data-testid': 'Heading'})
+                  
+                  for link in article_links[:15]:
+                      try:
+                          title = link.get_text(strip=True)
+                          article_url = link.get('href', '')
+                          
+                          if article_url and not article_url.startswith('http'):
+                              article_url = f"https://www.reuters.com{article_url}"
+                          
+                          # Try to find description
+                          parent = link.find_parent('article') or link.find_parent('div')
+                          description = ""
+                          if parent:
+                              desc_elem = parent.find('p')
+                              if desc_elem:
+                                  description = desc_elem.get_text(strip=True)
+                          
+                          if title and article_url:
+                              json_articles.append({
+                                  'title': title,
+                                  'link': article_url,
+                                  'description': description,
+                                  'pubDate': datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S +0000")
+                              })
+                      except Exception as e:
+                          print(f"Error parsing article: {e}")
+                          continue
+              
+              new_articles = []
+              for a in json_articles[:15]:
+                  if a['link'] and a['title']:
+                      if a['link'].startswith('/'):
+                          a['link'] = 'https://www.reuters.com' + a['link']
+                      new_articles.append(a)
+              
+              print(f"Found {len(new_articles)} new articles")
+              
+              # Merge with existing, remove duplicates
+              existing_links = {x['link'] for x in existing_items}
+              combined = new_articles + [x for x in existing_items if x['link'] not in {a['link'] for a in new_articles}]
+              combined = combined[:max_items]
+              
+              # Add items to feed
+              if combined:
+                  for article in combined:
+                      fe = fg.add_entry()
+                      fe.id(article['link'])
+                      fe.link(href=article['link'])
+                      fe.title(article['title'])
+                      fe.description(article.get('description', ''))
+                      fe.pubDate(article['pubDate'])
+                  
+                  fg.rss_file(feed_file)
+                  print(f"RSS feed generated with {len(combined)} items")
+              else:
+                  print("No articles found, keeping existing feed if available")
+                  if existing_items:
+                      print(f"Keeping {len(existing_items)} existing items")
+                      for article in existing_items[:max_items]:
+                          fe = fg.add_entry()
+                          fe.id(article['link'])
+                          fe.link(href=article['link'])
+                          fe.title(article['title'])
+                          fe.description(article.get('description', ''))
+                          fe.pubDate(article['pubDate'])
+                      fg.rss_file(feed_file)
+                  
+          except requests.exceptions.HTTPError as e:
+              print(f"HTTP Error: {e}")
+              print(f"Status Code: {r.status_code}")
+              print("Keeping existing feed if available")
+              # If we have existing items, regenerate feed with them
+              if existing_items:
+                  for article in existing_items[:max_items]:
+                      fe = fg.add_entry()
+                      fe.id(article['link'])
+                      fe.link(href=article['link'])
+                      fe.title(article['title'])
+                      fe.description(article.get('description', ''))
+                      fe.pubDate(article['pubDate'])
+                  fg.rss_file(feed_file)
+              else:
+                  raise  # Re-raise if no fallback available
+          except Exception as e:
+              print(f"Unexpected error: {e}")
+              # Keep existing feed if available
+              if existing_items:
+                  for article in existing_items[:max_items]:
+                      fe = fg.add_entry()
+                      fe.id(article['link'])
+                      fe.link(href=article['link'])
+                      fe.title(article['title'])
+                      fe.description(article.get('description', ''))
+                      fe.pubDate(article['pubDate'])
+                  fg.rss_file(feed_file)
+              else:
+                  raise
+          
           EOF
-
       - name: Commit and push RSS feed
         uses: ad-m/github-push-action@v0.6.0
         with:
