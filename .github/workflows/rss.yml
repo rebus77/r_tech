@@ -24,13 +24,14 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests feedgen python-dateutil
+          pip install requests beautifulsoup4 feedgen python-dateutil lxml
 
-      # 4. Generate RSS feed from Reuters JSON API
+      # 4. Generate RSS feed
       - name: Generate RSS feed
         run: |
           python << 'EOF'
           import requests
+          from bs4 import BeautifulSoup
           from feedgen.feed import FeedGenerator
           from dateutil.parser import parse
           import datetime
@@ -63,35 +64,70 @@ jobs:
                   })
                   existing_links.add(link)
 
-          # Fetch articles from Reuters JSON API
-          url = "https://www.reuters.com/pf/api/v3/content/fetch/articles-by-section?section=technology"
-          headers = {'User-Agent': 'Mozilla/5.0'}
-          r = requests.get(url, headers=headers)
-          data = r.json()
-
           new_articles = []
 
-          for article in data.get('result', {}).get('articles', [])[:20]:
-              link = "https://www.reuters.com" + article['canonical_url']
-              if link in existing_links:
-                  continue  # skip articles already in feed
-              title = article.get('title', 'No Title')
-              description = article.get('summary', '')
-              pub_dt = parse(article['published_time']) if article.get('published_time') else datetime.datetime.utcnow()
-              new_articles.append({
-                  'title': title,
-                  'link': link,
-                  'description': description,
-                  'pubDate': pub_dt
-              })
+          # --- Try JSON API first ---
+          json_url = "https://www.reuters.com/pf/api/v3/content/fetch/articles-by-section?section=technology"
+          headers = {
+              'User-Agent': 'Mozilla/5.0',
+              'Accept': 'application/json',
+              'Referer': 'https://www.reuters.com/technology/'
+          }
 
-          # Combine new and existing articles
+          try:
+              r = requests.get(json_url, headers=headers, timeout=10)
+              r.raise_for_status()
+              data = r.json()
+              for article in data.get('result', {}).get('articles', [])[:20]:
+                  link = "https://www.reuters.com" + article['canonical_url']
+                  if link in existing_links:
+                      continue
+                  title = article.get('title', 'No Title')
+                  description = article.get('summary', '')
+                  pub_dt = parse(article['published_time']) if article.get('published_time') else datetime.datetime.utcnow()
+                  new_articles.append({
+                      'title': title,
+                      'link': link,
+                      'description': description,
+                      'pubDate': pub_dt
+                  })
+          except Exception as e:
+              print(f"JSON API failed, falling back to HTML scraping: {e}")
+              html_url = "https://www.reuters.com/technology/"
+              r = requests.get(html_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+              soup = BeautifulSoup(r.text, 'lxml')
+              articles = soup.select('article, div[data-testid="story"]')[:20]
+              for item in articles:
+                  a_tag = item.find('a', href=True)
+                  if not a_tag:
+                      continue
+                  link = a_tag['href']
+                  if link.startswith('/'):
+                      link = 'https://www.reuters.com' + link
+                  if link in existing_links:
+                      continue
+                  title_tag = item.select_one('h3, h2')
+                  title = title_tag.get_text(strip=True) if title_tag else a_tag.get_text(strip=True)
+                  desc_tag = item.select_one('p')
+                  description = desc_tag.get_text(strip=True) if desc_tag else ''
+                  time_tag = item.find('time')
+                  if time_tag and time_tag.has_attr('datetime'):
+                      pub_dt = parse(time_tag['datetime'])
+                  else:
+                      pub_dt = datetime.datetime.utcnow()
+                  new_articles.append({
+                      'title': title,
+                      'link': link,
+                      'description': description,
+                      'pubDate': pub_dt
+                  })
+
+          # Combine new and existing, sort by pubDate descending
           combined = new_articles + existing_items
-          # Sort by pubDate, newest first
           combined.sort(key=lambda x: x['pubDate'], reverse=True)
           combined = combined[:max_items]
 
-          # Add items to feed
+          # Add entries to feed
           for article in combined:
               fe = fg.add_entry()
               fe.id(article['link'])
@@ -100,7 +136,6 @@ jobs:
               fe.description(article['description'])
               fe.pubDate(article['pubDate'].strftime("%a, %d %b %Y %H:%M:%S %z"))
 
-          # Write feed
           fg.rss_file(feed_file)
           EOF
 
