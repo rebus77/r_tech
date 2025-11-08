@@ -1,0 +1,3 @@
+# Reuters Technology RSS
+
+This repository generates a live RSS feed of the latest Reuters Technology news, updating every 20 minutes using GitHub Actions.
