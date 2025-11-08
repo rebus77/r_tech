@@ -85,7 +85,7 @@ jobs:
 
           node scripts/generate-rss.js
 
-      # 5️⃣ Commit and push RSS feed to the same branch as GitHub Pages
+      # 5️⃣ Commit and push RSS feed
       - name: Commit and push RSS feed
         uses: ad-m/github-push-action@v0.8.0
         with:
@@ -93,4 +93,3 @@ jobs:
           branch: main
           force: true
           directory: .
-EOF
