@@ -10,30 +10,32 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout repository
+      # 1. Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      # Step 2: Set up Python
+      # 2. Setup Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.x'
 
-      # Step 3: Install dependencies
+      # 3. Install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 feedgen python-dateutil
 
-      # Step 4: Generate RSS feed with rolling history
-      - name: Generate RSS feed with history
+      # 4. Generate RSS feed
+      - name: Generate RSS feed
         run: |
           python << 'EOF'
-          import requests, datetime, os
+          import requests
           from bs4 import BeautifulSoup
           from feedgen.feed import FeedGenerator
           from dateutil.parser import parse
+          import datetime
+          import os
           import xml.etree.ElementTree as ET
 
           feed_file = 'feed.xml'
@@ -56,24 +58,32 @@ jobs:
                       'pubDate': item.find('pubDate').text
                   })
 
-          # Fetch new articles
+          # Fetch articles
           url = 'https://www.reuters.com/technology/'
-          r = requests.get(url)
+          headers = {'User-Agent': 'Mozilla/5.0'}
+          r = requests.get(url, headers=headers)
           soup = BeautifulSoup(r.text, 'html.parser')
 
           new_articles = []
-          articles = soup.find_all("div", attrs={"data-testid": "story"})
+
+          # Look for top stories, Reuters may change HTML frequently
+          articles = soup.select('article.story, div[data-testid="story"]')  # multiple selectors
           for item in articles[:15]:
-              a_tag = item.find("a")
+              a_tag = item.find('a')
               if not a_tag:
                   continue
-              link = "https://www.reuters.com" + a_tag.get("href", "")
+              link = a_tag.get('href')
+              if link.startswith('/'):
+                  link = 'https://www.reuters.com' + link
               title = a_tag.get_text(strip=True)
-              time_tag = item.find("time")
-              pub_dt = parse(time_tag["datetime"]) if time_tag else datetime.datetime.utcnow()
-              new_articles.append({'title': title, 'link': link, 'pubDate': pub_dt.isoformat()})
+              time_tag = item.find('time')
+              if time_tag and time_tag.has_attr('datetime'):
+                  pub_dt = parse(time_tag['datetime']).isoformat()
+              else:
+                  pub_dt = datetime.datetime.utcnow().isoformat()
+              new_articles.append({'title': title, 'link': link, 'pubDate': pub_dt})
 
-          # Combine new + existing, removing duplicates
+          # Combine new and existing, remove duplicates
           combined = new_articles + [x for x in existing_items if x['link'] not in {a['link'] for a in new_articles}]
           combined = combined[:max_items]  # keep only latest max_items
 
@@ -85,10 +95,11 @@ jobs:
               fe.title(article['title'])
               fe.pubDate(article['pubDate'])
 
+          # Write feed
           fg.rss_file(feed_file)
           EOF
 
-      # Step 5: Commit and push RSS feed
+      # 5. Commit and push
       - name: Commit and push RSS feed
         run: |
           git config --global user.name "github-actions[bot]"
